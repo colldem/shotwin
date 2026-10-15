@@ -11,7 +11,7 @@ import ctypes
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QPoint, QPointF, QRect, QRectF, QAbstractNativeEventFilter, QSettings, QStandardPaths
+from PySide6.QtCore import Qt, QPoint, QPointF, QRect, QRectF, QSize, QAbstractNativeEventFilter, QSettings, QStandardPaths
 from PySide6.QtGui import (QAction, QColor, QFont, QGuiApplication, QIcon, QImage, QKeySequence, QPainter,
                            QPainterPath, QPen, QPixmap, QPolygonF, QShortcut, QCursor)
 from PySide6.QtWidgets import (QApplication, QColorDialog, QFileDialog, QInputDialog, QLabel, QMenu,
@@ -207,6 +207,76 @@ class Canvas(QWidget):
             self.update()
 
 
+def tool_icon(name, color=None):
+    """Draw a 24×24 line icon (rendered at 2× for crispness)."""
+    px = QPixmap(48, 48)
+    px.setDevicePixelRatio(2)
+    px.fill(Qt.transparent)
+    p = QPainter(px)
+    p.setRenderHint(QPainter.Antialiasing)
+    fg = QColor("#e8e8e8")
+    p.setPen(QPen(fg, 2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    if name == "arrow":
+        p.drawLine(QPointF(5, 19), QPointF(18, 6))
+        p.setBrush(fg)
+        p.drawPolygon(QPolygonF([QPointF(19, 5), QPointF(11, 7), QPointF(17, 13)]))
+    elif name == "rect":
+        p.drawRoundedRect(QRectF(4, 6, 16, 12), 2, 2)
+    elif name == "text":
+        p.setFont(QFont("Segoe UI", 15, QFont.Bold))
+        p.drawText(QRectF(0, 0, 24, 24), Qt.AlignCenter, "T")
+    elif name == "blur":
+        for i in range(3):
+            for j in range(3):
+                c = QColor(fg)
+                c.setAlpha(255 if (i + j) % 2 == 0 else 110)
+                p.fillRect(QRectF(4 + i * 5.5, 4 + j * 5.5, 4.5, 4.5), c)
+    elif name == "pen":
+        path = QPainterPath(QPointF(4, 17))
+        path.cubicTo(QPointF(8, 5), QPointF(12, 21), QPointF(20, 7))
+        p.drawPath(path)
+    elif name == "marker":
+        c = QColor("#ffd60a")
+        c.setAlpha(170)
+        p.setPen(QPen(c, 7, Qt.SolidLine, Qt.RoundCap))
+        p.drawLine(QPointF(6, 15), QPointF(18, 9))
+    elif name == "color":
+        p.setPen(QPen(fg, 1.5))
+        p.setBrush(color or QColor("#ff3b30"))
+        p.drawEllipse(QRectF(4, 4, 16, 16))
+    elif name == "undo":
+        path = QPainterPath(QPointF(8, 9))
+        path.lineTo(QPointF(15, 9))
+        path.cubicTo(QPointF(21, 9), QPointF(21, 19), QPointF(15, 19))
+        path.lineTo(QPointF(8, 19))
+        p.drawPath(path)
+        p.drawPolyline(QPolygonF([QPointF(11, 5), QPointF(7, 9), QPointF(11, 13)]))
+    elif name == "copy":
+        p.drawRoundedRect(QRectF(8, 8, 12, 12), 2, 2)
+        p.drawPolyline(QPolygonF([QPointF(5, 15), QPointF(4, 15), QPointF(4, 4), QPointF(15, 4), QPointF(15, 5)]))
+    elif name == "save":
+        p.drawLine(QPointF(12, 4), QPointF(12, 15))
+        p.drawPolyline(QPolygonF([QPointF(7, 10), QPointF(12, 15), QPointF(17, 10)]))
+        p.drawPolyline(QPolygonF([QPointF(4, 16), QPointF(4, 20), QPointF(20, 20), QPointF(20, 16)]))
+    elif name == "pin":
+        p.drawPolygon(QPolygonF([QPointF(9, 4), QPointF(15, 4), QPointF(14, 10), QPointF(18, 14),
+                                 QPointF(6, 14), QPointF(10, 10)]))
+        p.drawLine(QPointF(12, 14), QPointF(12, 20))
+    p.end()
+    return QIcon(px)
+
+
+TOOLBAR_QSS = """
+QToolBar { background: #1e1e20; border: none; border-bottom: 1px solid #333; padding: 4px 6px; spacing: 2px; }
+QToolBar::separator { background: #3a3a3c; width: 1px; margin: 6px 6px; }
+QToolButton { color: #d0d0d0; background: transparent; border: none; border-radius: 7px;
+              padding: 4px 6px; min-width: 46px; font-size: 11px; }
+QToolButton:hover { background: #2f2f33; }
+QToolButton:pressed { background: #3a3a40; }
+QToolButton:checked { background: #2d8cff; color: white; }
+"""
+
+
 class Editor(QMainWindow):
     def __init__(self, app, pixmap):
         super().__init__()
@@ -218,17 +288,30 @@ class Editor(QMainWindow):
         sa.setAlignment(Qt.AlignCenter)
         self.setCentralWidget(sa)
         tb = QToolBar()
+        tb.setMovable(False)
+        tb.setIconSize(QSize(22, 22))
+        tb.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        tb.setStyleSheet(TOOLBAR_QSS)
         self.addToolBar(tb)
-        for key, name in [("A", "arrow"), ("R", "rect"), ("T", "text"), ("B", "blur"), ("P", "pen"), ("M", "marker")]:
-            act = QAction(f"{name.title()} ({key})", self, shortcut=key, checkable=True)
+        for key, name, label in [("A", "arrow", "Arrow"), ("R", "rect", "Rectangle"), ("T", "text", "Text"),
+                                 ("B", "blur", "Blur"), ("P", "pen", "Pen"), ("M", "marker", "Marker")]:
+            act = QAction(tool_icon(name), label, self, shortcut=key, checkable=True)
+            act.setToolTip(f"{label} ({key})")
             act.triggered.connect(lambda _=False, n=name: self.set_tool(n))
             act.setData(name)
             tb.addAction(act)
         tb.addSeparator()
-        for text, sc, fn in [("Color (C)", "C", self.pick_color), ("Undo", QKeySequence.Undo, self.canvas.undo),
-                             ("Copy", QKeySequence.Copy, self.copy), ("Save", QKeySequence.Save, self.save),
-                             ("Pin", "Ctrl+P", self.pin)]:
-            act = QAction(text, self, shortcut=sc)
+        self.color_act = QAction(tool_icon("color", self.canvas.color), "Color", self, shortcut="C")
+        self.color_act.setToolTip("Color (C)")
+        self.color_act.triggered.connect(self.pick_color)
+        tb.addAction(self.color_act)
+        tb.addSeparator()
+        for icon, text, sc, tip, fn in [("undo", "Undo", QKeySequence.Undo, "Ctrl+Z", self.canvas.undo),
+                                        ("copy", "Copy", QKeySequence.Copy, "Ctrl+C", self.copy),
+                                        ("save", "Save", QKeySequence.Save, "Ctrl+S", self.save),
+                                        ("pin", "Pin", "Ctrl+P", "Ctrl+P", self.pin)]:
+            act = QAction(tool_icon(icon), text, self, shortcut=sc)
+            act.setToolTip(f"{text} ({tip})")
             act.triggered.connect(fn)
             tb.addAction(act)
         self.tb = tb
@@ -250,6 +333,7 @@ class Editor(QMainWindow):
         c = QColorDialog.getColor(self.canvas.color, self)
         if c.isValid():
             self.canvas.color = c
+            self.color_act.setIcon(tool_icon("color", c))
 
     def copy(self):
         QGuiApplication.clipboard().setImage(self.canvas.render_image().toImage())
