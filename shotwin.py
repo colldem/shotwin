@@ -11,10 +11,11 @@ import ctypes
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QPoint, QPointF, QRect, QRectF, QSize, QAbstractNativeEventFilter, QSettings, QStandardPaths
-from PySide6.QtGui import (QAction, QColor, QFont, QGuiApplication, QIcon, QImage, QKeySequence, QPainter,
+from PySide6.QtCore import Qt, QPoint, QPointF, QRect, QRectF, QSize, QSizeF, QAbstractNativeEventFilter, QSettings, QStandardPaths
+from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QGuiApplication, QIcon, QImage, QKeySequence, QPainter,
                            QPainterPath, QPen, QPixmap, QPolygonF, QShortcut, QCursor)
-from PySide6.QtWidgets import (QApplication, QColorDialog, QFileDialog, QInputDialog, QLabel, QMenu,
+from PySide6.QtWidgets import (QApplication, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
+                               QHBoxLayout, QLabel, QMenu, QPlainTextEdit, QSpinBox, QToolButton, QVBoxLayout,
                                QSystemTrayIcon, QToolBar, QWidget, QMainWindow, QScrollArea, QMessageBox)
 
 APP = "ShotWin"
@@ -104,61 +105,151 @@ class Overlay(QWidget):
 
 
 # ---------------------------------------------------------------- editor
+FONTS = ["Segoe UI", "Arial", "Times New Roman", "Georgia", "Consolas", "Comic Sans MS"]
+WIDTHS = [("Thin", 2), ("Medium", 4), ("Thick", 8)]
+
+
+class TextDialog(QDialog):
+    """Text input with font family, size and Bold / Italic / Underline."""
+
+    def __init__(self, parent, item=None):
+        super().__init__(parent)
+        self.setWindowTitle("Text")
+        it = item or {"text": "", "family": "Segoe UI", "size": 18, "bold": True, "italic": False, "underline": False}
+        self.edit = QPlainTextEdit(it["text"])
+        self.edit.setFixedHeight(80)
+        self.family = QComboBox()
+        self.family.addItems(FONTS)
+        self.family.setCurrentText(it["family"])
+        self.size = QSpinBox()
+        self.size.setRange(8, 96)
+        self.size.setValue(it["size"])
+        self.size.setSuffix(" pt")
+        row = QHBoxLayout()
+        row.addWidget(self.family, 1)
+        row.addWidget(self.size)
+        self.flags = {}
+        for key, label, tip in [("bold", "B", "Bold (Ctrl+B)"), ("italic", "I", "Italic (Ctrl+I)"),
+                                ("underline", "U", "Underline (Ctrl+U)")]:
+            b = QToolButton(text=label, checkable=True, checked=it[key])
+            f = b.font()
+            f.setBold(key == "bold"); f.setItalic(key == "italic"); f.setUnderline(key == "underline")
+            b.setFont(f)
+            b.setToolTip(tip)
+            b.setFixedSize(30, 28)
+            b.setShortcut(f"Ctrl+{label}")
+            b.toggled.connect(self.refresh)
+            self.flags[key] = b
+            row.addWidget(b)
+        self.family.currentTextChanged.connect(self.refresh)
+        self.size.valueChanged.connect(self.refresh)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay = QVBoxLayout(self)
+        lay.addLayout(row)
+        lay.addWidget(self.edit)
+        lay.addWidget(QLabel("Tip: drag text on the image to move it, double-click to edit."))
+        lay.addWidget(bb)
+        self.refresh()
+        self.edit.setFocus()
+
+    def values(self):
+        return {"text": self.edit.toPlainText(), "family": self.family.currentText(), "size": self.size.value(),
+                **{k: b.isChecked() for k, b in self.flags.items()}}
+
+    def refresh(self):
+        self.edit.setFont(item_font(self.values()))
+
+
+def item_font(it):
+    f = QFont(it["family"], it["size"])
+    f.setBold(it["bold"]); f.setItalic(it["italic"]); f.setUnderline(it["underline"])
+    return f
+
+
 class Canvas(QWidget):
     def __init__(self, pixmap):
         super().__init__()
         self.base = pixmap
         self.dpr = pixmap.devicePixelRatio()
-        self.items = []  # (kind, color, data)
+        self.items = []  # dicts: kind, color, width, pts | text fields
+        self.history = []  # snapshots of self.items for undo
         self.tool = "arrow"
         self.color = QColor("#ff3b30")
         self.width_ = 4
         self.cur = None
+        self.drag = None  # (text item, offset)
         self.setFixedSize(pixmap.deviceIndependentSize().toSize())
+        self.setMouseTracking(True)
         self.setCursor(Qt.CrossCursor)
 
+    # --- state
+    def snapshot(self):
+        self.history.append([dict(it, pts=list(it["pts"])) if "pts" in it else dict(it) for it in self.items])
+
+    def undo(self):
+        if self.history:
+            self.items = self.history.pop()
+            self.update()
+
+    def text_rect(self, it):
+        fm = QFontMetrics(item_font(it))
+        r = fm.boundingRect(QRect(0, 0, 4000, 4000), Qt.AlignLeft | Qt.AlignTop, it["text"])
+        return QRectF(it["pos"], QSizeF(r.width() + 4, r.height()))
+
+    def text_at(self, pt):
+        for it in reversed(self.items):
+            if it["kind"] == "text" and self.text_rect(it).adjusted(-4, -4, 4, 4).contains(pt):
+                return it
+        return None
+
+    # --- drawing
     def render_image(self):
         img = QPixmap(self.base.size())
         img.setDevicePixelRatio(self.dpr)
         p = QPainter(img)
         p.drawPixmap(0, 0, self.base)
         for it in self.items:
-            self.draw_item(p, *it)
+            self.draw_item(p, it)
         p.end()
         return img
 
-    def draw_item(self, p, kind, color, data):
+    def draw_item(self, p, it):
+        kind, color, w = it["kind"], it["color"], it.get("width", 4)
         p.setRenderHint(QPainter.Antialiasing)
-        pen = QPen(color, self.width_, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
-        p.setPen(pen)
+        p.setPen(QPen(color, w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
         p.setBrush(Qt.NoBrush)
         if kind == "rect":
-            p.drawRect(QRectF(data[0], data[1]).normalized())
+            p.drawRect(QRectF(*it["pts"]).normalized())
         elif kind == "arrow":
-            a, b = data
-            p.drawLine(a, b)
+            a, b = it["pts"]
             v = b - a
             ln = (v.x() ** 2 + v.y() ** 2) ** 0.5 or 1
             u = QPointF(v.x() / ln, v.y() / ln)
             n = QPointF(-u.y(), u.x())
-            s = 6 + self.width_ * 3
+            s = 8 + w * 2.5
+            p.drawLine(a, b - u * (s * 0.6))
+            p.setPen(Qt.NoPen)
             p.setBrush(color)
-            p.drawPolygon(QPolygonF([b, b - u * s + n * s * 0.6, b - u * s - n * s * 0.6]))
+            p.drawPolygon(QPolygonF([b, b - u * s + n * s * 0.55, b - u * s - n * s * 0.55]))
         elif kind in ("pen", "marker"):
-            path = QPainterPath(data[0])
-            for pt in data[1:]:
+            pts = it["pts"]
+            path = QPainterPath(pts[0])
+            for pt in pts[1:]:
                 path.lineTo(pt)
             if kind == "marker":
                 c = QColor(color)
                 c.setAlpha(90)
-                p.setPen(QPen(c, 18, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+                p.setPen(QPen(c, 6 + w * 3, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
             p.drawPath(path)
         elif kind == "text":
-            pos, text = data
-            p.setFont(QFont("Segoe UI", 18, QFont.Bold))
-            p.drawText(pos, text)
+            p.setPen(color)
+            p.setFont(item_font(it))
+            r = self.text_rect(it)
+            p.drawText(r.adjusted(0, 0, 100, 100), Qt.AlignLeft | Qt.AlignTop, it["text"])
         elif kind == "blur":
-            r = QRectF(data[0], data[1]).normalized().toRect()
+            r = QRectF(*it["pts"]).normalized().toRect()
             if r.width() < 2 or r.height() < 2:
                 return
             src = self.base.copy(QRect(int(r.x() * self.dpr), int(r.y() * self.dpr),
@@ -171,39 +262,72 @@ class Canvas(QWidget):
         p = QPainter(self)
         p.drawPixmap(0, 0, self.base)
         for it in self.items + ([self.cur] if self.cur else []):
-            self.draw_item(p, *it)
+            self.draw_item(p, it)
+        if self.drag:
+            p.setPen(QPen(QColor("#2d8cff"), 1, Qt.DashLine))
+            p.setBrush(Qt.NoBrush)
+            p.drawRect(self.text_rect(self.drag[0]).adjusted(-3, -3, 3, 3))
+
+    # --- mouse
+    def edit_text(self, item=None, pos=None):
+        dlg = TextDialog(self, item)
+        if dlg.exec() != QDialog.Accepted or not dlg.values()["text"].strip():
+            return
+        self.snapshot()
+        if item:
+            item.update(dlg.values())
+        else:
+            self.items.append({"kind": "text", "color": QColor(self.color), "pos": pos, **dlg.values()})
+        self.update()
 
     def mousePressEvent(self, e):
         pt = e.position()
-        if self.tool == "text":
-            text, ok = QInputDialog.getText(self, "Text", "Text:")
-            if ok and text:
-                self.items.append(("text", QColor(self.color), (pt, text)))
-                self.update()
+        if e.button() != Qt.LeftButton:
             return
-        if self.tool in ("pen", "marker"):
-            self.cur = (self.tool, QColor(self.color), [pt])
-        else:
-            self.cur = (self.tool, QColor(self.color), [pt, pt])
+        hit = self.text_at(pt)
+        if hit:  # any tool: grab text to move it
+            self.snapshot()
+            self.drag = (hit, pt - hit["pos"])
+            self.setCursor(Qt.ClosedHandCursor)
+            self.update()
+            return
+        if self.tool == "text":
+            self.edit_text(pos=pt)
+            return
+        n = 1 if self.tool in ("pen", "marker") else 2
+        self.cur = {"kind": self.tool, "color": QColor(self.color), "width": self.width_, "pts": [pt] * n}
+
+    def mouseDoubleClickEvent(self, e):
+        hit = self.text_at(e.position())
+        if hit:
+            self.drag = None
+            self.history.pop()  # the press already snapshotted
+            self.edit_text(hit)
 
     def mouseMoveEvent(self, e):
-        if not self.cur:
+        pt = e.position()
+        if self.drag:
+            self.drag[0]["pos"] = pt - self.drag[1]
+            self.update()
             return
-        if self.cur[0] in ("pen", "marker"):
-            self.cur[2].append(e.position())
+        if not self.cur:
+            self.setCursor(Qt.OpenHandCursor if self.text_at(pt) else Qt.CrossCursor)
+            return
+        if self.cur["kind"] in ("pen", "marker"):
+            self.cur["pts"].append(pt)
         else:
-            self.cur[2][1] = e.position()
+            self.cur["pts"][1] = pt
         self.update()
 
     def mouseReleaseEvent(self, _):
-        if self.cur:
+        if self.drag:
+            self.drag = None
+            self.setCursor(Qt.OpenHandCursor)
+            self.update()
+        elif self.cur:
+            self.snapshot()
             self.items.append(self.cur)
             self.cur = None
-            self.update()
-
-    def undo(self):
-        if self.items:
-            self.items.pop()
             self.update()
 
 
@@ -258,6 +382,12 @@ def tool_icon(name, color=None):
         p.drawLine(QPointF(12, 4), QPointF(12, 15))
         p.drawPolyline(QPolygonF([QPointF(7, 10), QPointF(12, 15), QPointF(17, 10)]))
         p.drawPolyline(QPolygonF([QPointF(4, 16), QPointF(4, 20), QPointF(20, 20), QPointF(20, 16)]))
+    elif name.startswith("width"):  # "width:<px>" = current thickness, plain "width" = all three
+        ws = [int(name.split(":")[1])] if ":" in name else [1, 2.5, 4.5]
+        for i, w in enumerate(ws):
+            y = 12 if len(ws) == 1 else 6 + i * 6
+            p.setPen(QPen(fg, min(w, 7), Qt.SolidLine, Qt.RoundCap))
+            p.drawLine(QPointF(4, y), QPointF(20, y))
     elif name == "pin":
         p.drawPolygon(QPolygonF([QPointF(9, 4), QPointF(15, 4), QPointF(14, 10), QPointF(18, 14),
                                  QPointF(6, 14), QPointF(10, 10)]))
@@ -274,6 +404,12 @@ QToolButton { color: #d0d0d0; background: transparent; border: none; border-radi
 QToolButton:hover { background: #2f2f33; }
 QToolButton:pressed { background: #3a3a40; }
 QToolButton:checked { background: #2d8cff; color: white; }
+QToolButton[popupMode="1"] { padding-right: 14px; }
+QToolButton::menu-button { border: none; width: 12px; }
+QToolButton::menu-indicator { image: none; width: 0; }
+QMenu { background: #26262a; color: #e8e8e8; border: 1px solid #3a3a3c; padding: 4px; }
+QMenu::item { padding: 6px 24px 6px 8px; border-radius: 5px; }
+QMenu::item:selected { background: #2d8cff; }
 """
 
 
@@ -300,7 +436,22 @@ class Editor(QMainWindow):
             act.triggered.connect(lambda _=False, n=name: self.set_tool(n))
             act.setData(name)
             tb.addAction(act)
+            if name == "arrow":
+                arrow_act = act
         tb.addSeparator()
+        # thickness: Thin / Medium / Thick — for arrow, rectangle, pen, marker
+        self.width_menu = QMenu(self)
+        self.width_menu.setStyleSheet(TOOLBAR_QSS)
+        for i, (label, w) in enumerate(WIDTHS, 1):
+            wa = self.width_menu.addAction(tool_icon(f"width:{w}"), f"{label}\t{i}")
+            wa.triggered.connect(lambda _=False, w=w, l=label: self.set_width(w, l))
+            QShortcut(str(i), self, lambda w=w, l=label: self.set_width(w, l))
+        self.width_act = QAction(tool_icon("width"), "Width", self)
+        self.width_act.setMenu(self.width_menu)
+        tb.addAction(self.width_act)
+        tb.widgetForAction(self.width_act).setPopupMode(QToolButton.InstantPopup)
+        arrow_act.setMenu(self.width_menu)
+        tb.widgetForAction(arrow_act).setPopupMode(QToolButton.MenuButtonPopup)
         self.color_act = QAction(tool_icon("color", self.canvas.color), "Color", self, shortcut="C")
         self.color_act.setToolTip("Color (C)")
         self.color_act.triggered.connect(self.pick_color)
@@ -328,6 +479,12 @@ class Editor(QMainWindow):
         for a in self.tb.actions():
             if a.isCheckable():
                 a.setChecked(a.data() == name)
+
+    def set_width(self, w, label):
+        self.canvas.width_ = w
+        self.width_act.setIcon(tool_icon(f"width:{w}"))
+        self.width_act.setToolTip(f"Width: {label} (1 / 2 / 3)")
+        self.statusBar().showMessage(f"Width: {label}", 1500)
 
     def pick_color(self):
         c = QColorDialog.getColor(self.canvas.color, self)
