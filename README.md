@@ -1,0 +1,31 @@
+# ShotWin
+
+Portable screenshot tool for Windows.
+
+## Download & run
+
+1. **Code → Download ZIP**, unpack anywhere.
+2. Run `bin\ShotWin.exe` — no installation, no Python needed.
+3. First launch: if Windows shows *"Windows protected your PC"*, click **More info → Run anyway** (the exe is not code-signed).
+
+The app lives in the system tray. `bin/ShotWin.exe` is rebuilt automatically from the latest `main` on every push.
+
+## Hotkeys
+
+| Key | Action |
+|---|---|
+| `Ctrl+Shift+1` | Area capture |
+| `Ctrl+Shift+2` | Full-screen capture |
+
+Editor: `A` arrow, `R` rectangle, `T` text, `B` blur, `P` pen, `M` marker, `1`/`2`/`3` line width, `C` color,
+`Ctrl+Z` undo, `Ctrl+C` copy, `Ctrl+S` save, `Ctrl+P` pin, `Esc` close.
+Text: drag to move, double-click to edit (font, size, bold / italic / underline).
+
+Only one copy can run at a time — if hotkeys "are already used", ShotWin is probably already in the tray.
+
+## Build from source
+
+```bat
+build.bat
+```
+Result: `dist\ShotWin.exe`.
