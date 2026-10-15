@@ -54,7 +54,7 @@ class Overlay(QWidget):
         self.mouse = QPoint()
 
     def sel(self):
-        return QRect(self.a, self.b).normalized() if self.a and self.b else QRect()
+        return QRect(self.a, self.b).normalized() if self.a is not None and self.b is not None else QRect()
 
     def paintEvent(self, _):
         p = QPainter(self)
@@ -63,7 +63,7 @@ class Overlay(QWidget):
         r = self.sel()
         if not r.isEmpty():
             dpr = self.shot.devicePixelRatio()
-            p.drawPixmap(r, self.shot, QRectF(r.x() * dpr, r.y() * dpr, r.width() * dpr, r.height() * dpr))
+            p.drawPixmap(QRectF(r), self.shot, QRectF(r.x() * dpr, r.y() * dpr, r.width() * dpr, r.height() * dpr))
             p.setPen(QPen(QColor("#2d8cff"), 1))
             p.drawRect(r.adjusted(0, 0, -1, -1))
             txt = f"{r.width()} × {r.height()}"
@@ -82,7 +82,7 @@ class Overlay(QWidget):
 
     def mouseMoveEvent(self, e):
         self.mouse = e.position().toPoint()
-        if self.a and e.buttons() & Qt.LeftButton:
+        if self.a is not None and e.buttons() & Qt.LeftButton:
             self.b = self.mouse
         self.update()
 
