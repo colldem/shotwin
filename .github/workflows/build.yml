@@ -17,7 +17,8 @@ jobs:
       - run: pyinstaller --noconfirm --onefile --windowed --name ShotWin shotwin.py
       - uses: actions/upload-artifact@v4
         with: { name: ShotWin, path: dist/ShotWin.exe }
-      # keep a ready-to-run exe in the repo so "Download ZIP" includes it
+      # keep a ready-to-run exe in the repo so "Download ZIP" includes it;
+      # the bot commit is tagged to skip CI, and bin/** is path-ignored, so no loop
       - name: Commit exe to bin/
         shell: bash
         run: |
