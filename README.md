@@ -21,6 +21,7 @@ The app lives in the system tray. `bin/ShotWin.exe` is rebuilt automatically fro
 Editor: `A` arrow, `R` shapes (rectangle / rounded / ellipse / line, Shift = square / circle), `T` text, `N` numbered steps, `B` blur,
 `P` pen, `M` marker, `C` color, `Ctrl+Z` undo, `Ctrl+C` copy, `Ctrl+S` save, `Esc` close.
 Line width (Thin / Medium / Thick): ▾ next to Arrow, Shapes, Step, Pen, Marker — or keys `1`/`2`/`3` for the current tool.
+Arrows & lines: click to select — drag to move, drag the round end handles to rotate / stretch.
 Text: drag to move, double-click to edit (font, size, bold / italic / underline).
 Steps: each click adds the next number (1, 2, 3…); drag to move, double-click to change the number, Undo removes the last one.
 

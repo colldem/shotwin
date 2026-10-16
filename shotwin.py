@@ -192,6 +192,8 @@ class Canvas(QWidget):
         self.shape = "rect"
         self.cur = None
         self.drag = None  # (text item, offset)
+        self.sel = None  # selected arrow / line (shows end handles)
+        self.vdrag = None  # (item, "a" | "b" | "body", press point, original pts, moved?)
         self.setFixedSize(pixmap.deviceIndependentSize().toSize())
         self.setMouseTracking(True)
         self.setCursor(Qt.CrossCursor)
@@ -202,6 +204,7 @@ class Canvas(QWidget):
 
     def undo(self):
         if self.history:
+            self.sel = None
             self.items = self.history.pop()
             self.update()
 
@@ -222,6 +225,29 @@ class Canvas(QWidget):
             if it["kind"] in ("text", "step") and self.obj_rect(it).adjusted(-4, -4, 4, 4).contains(pt):
                 return it
         return None
+
+    VECTOR = ("arrow", "line")
+    HANDLE = 6  # handle radius
+
+    def vector_hit(self, pt):
+        """(item, part) for an arrow/line under the point: part = "a"/"b" (end handle) or "body"."""
+        def near(a, b, r):
+            return (a.x() - b.x()) ** 2 + (a.y() - b.y()) ** 2 <= r * r
+        if self.sel in self.items:
+            a, b = self.sel["pts"]
+            for part, q in (("b", b), ("a", a)):
+                if near(pt, q, self.HANDLE + 4):
+                    return self.sel, part
+        for it in reversed(self.items):
+            if it["kind"] not in self.VECTOR:
+                continue
+            a, b = it["pts"]
+            v = b - a
+            ln2 = v.x() ** 2 + v.y() ** 2 or 1
+            t = max(0.0, min(1.0, ((pt.x() - a.x()) * v.x() + (pt.y() - a.y()) * v.y()) / ln2))
+            if near(pt, a + v * t, max(7, it["width"] + 4)):
+                return it, "body"
+        return None, None
 
     def next_step(self):
         return max((it["n"] for it in self.items if it["kind"] == "step"), default=0) + 1
@@ -304,6 +330,11 @@ class Canvas(QWidget):
         p.drawPixmap(0, 0, self.base)
         for it in self.items + ([self.cur] if self.cur else []):
             self.draw_item(p, it)
+        if self.sel in self.items:  # end handles of the selected arrow / line (screen only, not saved)
+            p.setPen(QPen(QColor("#2d8cff"), 2))
+            p.setBrush(Qt.white)
+            for q in self.sel["pts"]:
+                p.drawEllipse(q, self.HANDLE, self.HANDLE)
         if self.drag:
             p.setPen(QPen(QColor("#2d8cff"), 1, Qt.DashLine))
             p.setBrush(Qt.NoBrush)
@@ -325,6 +356,14 @@ class Canvas(QWidget):
         pt = e.position()
         if e.button() != Qt.LeftButton:
             return
+        vit, part = self.vector_hit(pt)
+        if vit:  # any tool: select arrow / line; drag body = move, drag end = rotate / stretch
+            self.sel = vit
+            self.vdrag = (vit, part, pt, list(vit["pts"]), False)
+            self.setCursor(Qt.ClosedHandCursor if part == "body" else Qt.SizeAllCursor)
+            self.update()
+            return
+        self.sel = None
         hit = self.obj_at(pt)
         if hit:  # any tool: grab text / step badge to move it
             self.snapshot()
@@ -361,12 +400,28 @@ class Canvas(QWidget):
 
     def mouseMoveEvent(self, e):
         pt = e.position()
+        if self.vdrag:
+            it, part, start, orig, moved = self.vdrag
+            if not moved:
+                self.snapshot()  # only when it really moves, so a plain click is not an undo step
+                self.vdrag = (it, part, start, orig, True)
+            d = pt - start
+            if part == "body":
+                it["pts"] = [orig[0] + d, orig[1] + d]
+            else:
+                it["pts"][0 if part == "a" else 1] = pt
+            self.update()
+            return
         if self.drag:
             self.drag[0]["pos"] = pt - self.drag[1]
             self.update()
             return
         if not self.cur:
-            self.setCursor(Qt.OpenHandCursor if self.obj_at(pt) else Qt.CrossCursor)
+            vit, part = self.vector_hit(pt)
+            if vit:
+                self.setCursor(Qt.OpenHandCursor if part == "body" else Qt.SizeAllCursor)
+            else:
+                self.setCursor(Qt.OpenHandCursor if self.obj_at(pt) else Qt.CrossCursor)
             return
         if self.cur["kind"] in ("pen", "marker"):
             self.cur["pts"].append(pt)
@@ -379,13 +434,23 @@ class Canvas(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, _):
-        if self.drag:
+        if self.vdrag:
+            self.vdrag = None
+            self.update()
+        elif self.drag:
             self.drag = None
             self.setCursor(Qt.OpenHandCursor)
             self.update()
         elif self.cur:
+            pts = self.cur["pts"]
+            if len(pts) == 2 and abs(pts[1].x() - pts[0].x()) + abs(pts[1].y() - pts[0].y()) < 4:
+                self.cur = None  # plain click, nothing drawn
+                self.update()
+                return
             self.snapshot()
             self.items.append(self.cur)
+            if self.cur["kind"] in self.VECTOR:
+                self.sel = self.cur  # freshly drawn arrow stays selected for quick adjusting
             self.cur = None
             self.update()
 
