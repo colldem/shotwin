@@ -4,7 +4,7 @@ Hotkeys (global, Windows):
   Ctrl+Shift+1  — area capture
   Ctrl+Shift+2  — full-screen capture (screen under the mouse)
   Ctrl+Shift+3  — all screens
-Editor: A arrow, R shapes (rectangle / rounded / ellipse / line), T text, B blur, P pen, M marker,
+Editor: A arrow, N numbered steps, R shapes (rectangle / rounded / ellipse / line), T text, B blur, P pen, M marker,
         1/2/3 width of the current tool, C color, Ctrl+Z undo, Ctrl+C copy, Ctrl+S save, Esc close.
 """
 import sys
@@ -15,7 +15,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QPoint, QPointF, QRect, QRectF, QSize, QSizeF, QAbstractNativeEventFilter, QSettings, QStandardPaths
 from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QGuiApplication, QIcon, QImage, QKeySequence, QPainter,
                            QPainterPath, QPen, QPixmap, QPolygonF, QShortcut, QCursor, QActionGroup)
-from PySide6.QtWidgets import (QApplication, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
+from PySide6.QtWidgets import (QApplication, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QInputDialog,
                                QHBoxLayout, QLabel, QMenu, QPlainTextEdit, QSpinBox, QToolButton, QVBoxLayout,
                                QSystemTrayIcon, QToolBar, QWidget, QMainWindow, QScrollArea, QMessageBox)
 
@@ -116,7 +116,8 @@ class Overlay(QWidget):
 FONTS = ["Segoe UI", "Arial", "Times New Roman", "Georgia", "Consolas", "Comic Sans MS"]
 WIDTHS = [("Thin", 2), ("Medium", 4), ("Thick", 8)]
 SHAPES = [("rect", "Rectangle"), ("rrect", "Rounded"), ("ellipse", "Ellipse"), ("line", "Line")]
-WIDTH_TOOLS = ("arrow", "shape", "pen", "marker")
+WIDTH_TOOLS = ("arrow", "shape", "pen", "marker", "step")
+STEP_RADIUS = {2: 11, 4: 15, 8: 21}  # Thin / Medium / Thick badge size
 
 
 class TextDialog(QDialog):
@@ -209,11 +210,21 @@ class Canvas(QWidget):
         r = fm.boundingRect(QRect(0, 0, 4000, 4000), Qt.AlignLeft | Qt.AlignTop, it["text"])
         return QRectF(it["pos"], QSizeF(r.width() + 4, r.height()))
 
-    def text_at(self, pt):
+    def obj_rect(self, it):
+        if it["kind"] == "step":
+            r = STEP_RADIUS.get(it["width"], 15)
+            return QRectF(it["pos"] - QPointF(r, r), QSizeF(2 * r, 2 * r))
+        return self.text_rect(it)
+
+    def obj_at(self, pt):
+        """Movable object (text or step badge) under the point."""
         for it in reversed(self.items):
-            if it["kind"] == "text" and self.text_rect(it).adjusted(-4, -4, 4, 4).contains(pt):
+            if it["kind"] in ("text", "step") and self.obj_rect(it).adjusted(-4, -4, 4, 4).contains(pt):
                 return it
         return None
+
+    def next_step(self):
+        return max((it["n"] for it in self.items if it["kind"] == "step"), default=0) + 1
 
     # --- drawing
     def render_image(self):
@@ -268,6 +279,16 @@ class Canvas(QWidget):
             p.setFont(item_font(it))
             r = self.text_rect(it)
             p.drawText(r.adjusted(0, 0, 100, 100), Qt.AlignLeft | Qt.AlignTop, it["text"])
+        elif kind == "step":
+            r = self.obj_rect(it)
+            p.setPen(QPen(QColor(255, 255, 255, 230), max(1.5, r.width() / 16)))
+            p.setBrush(color)
+            p.drawEllipse(r)
+            f = QFont("Segoe UI", 1, QFont.Bold)
+            f.setPixelSize(int(r.height() * (0.58 if it["n"] < 10 else 0.46)))
+            p.setFont(f)
+            p.setPen(Qt.white if color.lightness() < 170 else Qt.black)
+            p.drawText(r, Qt.AlignCenter, str(it["n"]))
         elif kind == "blur":
             r = QRectF(*it["pts"]).normalized().toRect()
             if r.width() < 2 or r.height() < 2:
@@ -286,7 +307,7 @@ class Canvas(QWidget):
         if self.drag:
             p.setPen(QPen(QColor("#2d8cff"), 1, Qt.DashLine))
             p.setBrush(Qt.NoBrush)
-            p.drawRect(self.text_rect(self.drag[0]).adjusted(-3, -3, 3, 3))
+            p.drawRect(self.obj_rect(self.drag[0]).adjusted(-3, -3, 3, 3))
 
     # --- mouse
     def edit_text(self, item=None, pos=None):
@@ -304,8 +325,8 @@ class Canvas(QWidget):
         pt = e.position()
         if e.button() != Qt.LeftButton:
             return
-        hit = self.text_at(pt)
-        if hit:  # any tool: grab text to move it
+        hit = self.obj_at(pt)
+        if hit:  # any tool: grab text / step badge to move it
             self.snapshot()
             self.drag = (hit, pt - hit["pos"])
             self.setCursor(Qt.ClosedHandCursor)
@@ -314,16 +335,29 @@ class Canvas(QWidget):
         if self.tool == "text":
             self.edit_text(pos=pt)
             return
+        if self.tool == "step":  # click = next numbered badge
+            self.snapshot()
+            self.items.append({"kind": "step", "color": QColor(self.color), "width": self.widths["step"],
+                               "pos": pt, "n": self.next_step()})
+            self.update()
+            return
         n = 1 if self.tool in ("pen", "marker") else 2
         kind = self.shape if self.tool == "shape" else self.tool
         self.cur = {"kind": kind, "color": QColor(self.color), "width": self.widths.get(self.tool, 4), "pts": [pt] * n}
 
     def mouseDoubleClickEvent(self, e):
-        hit = self.text_at(e.position())
+        hit = self.obj_at(e.position())
         if hit:
             self.drag = None
             self.history.pop()  # the press already snapshotted
-            self.edit_text(hit)
+            if hit["kind"] == "text":
+                self.edit_text(hit)
+            else:
+                n, ok = QInputDialog.getInt(self, "Step", "Number:", hit["n"], 1, 999)
+                if ok:
+                    self.snapshot()
+                    hit["n"] = n
+                    self.update()
 
     def mouseMoveEvent(self, e):
         pt = e.position()
@@ -332,7 +366,7 @@ class Canvas(QWidget):
             self.update()
             return
         if not self.cur:
-            self.setCursor(Qt.OpenHandCursor if self.text_at(pt) else Qt.CrossCursor)
+            self.setCursor(Qt.OpenHandCursor if self.obj_at(pt) else Qt.CrossCursor)
             return
         if self.cur["kind"] in ("pen", "marker"):
             self.cur["pts"].append(pt)
@@ -377,6 +411,13 @@ def tool_icon(name, color=None):
         p.drawEllipse(QRectF(3, 6, 18, 12))
     elif name == "line":
         p.drawLine(QPointF(5, 19), QPointF(19, 5))
+    elif name == "step":
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#ff3b30"))
+        p.drawEllipse(QRectF(3, 3, 18, 18))
+        p.setPen(Qt.white)
+        p.setFont(QFont("Segoe UI", 10, QFont.Bold))
+        p.drawText(QRectF(3, 3, 18, 18), Qt.AlignCenter, "1")
     elif name == "text":
         p.setFont(QFont("Segoe UI", 15, QFont.Bold))
         p.drawText(QRectF(0, 0, 24, 24), Qt.AlignCenter, "T")
@@ -456,7 +497,7 @@ class Editor(QMainWindow):
         self.addToolBar(tb)
         self.tool_acts = {}
         self.width_groups = {}
-        for key, name, label in [("A", "arrow", "Arrow"), ("R", "shape", "Rectangle"), ("T", "text", "Text"),
+        for key, name, label in [("A", "arrow", "Arrow"), ("R", "shape", "Rectangle"), ("T", "text", "Text"), ("N", "step", "Step"),
                                  ("B", "blur", "Blur"), ("P", "pen", "Pen"), ("M", "marker", "Marker")]:
             act = QAction(tool_icon("rect" if name == "shape" else name), label, self, shortcut=key, checkable=True)
             act.setToolTip(f"{label} ({key})")
