@@ -4,8 +4,8 @@ Hotkeys (global, Windows):
   Ctrl+Shift+1  — area capture
   Ctrl+Shift+2  — full-screen capture (screen under the mouse)
   Ctrl+Shift+3  — all screens
-Editor: A arrow, R rect, T text, B blur, P pen, M marker, C color,
-        Ctrl+Z undo, Ctrl+C copy, Ctrl+S save, Ctrl+P pin, Esc close.
+Editor: A arrow, R shapes (rectangle / rounded / ellipse / line), T text, B blur, P pen, M marker,
+        1/2/3 width of the current tool, C color, Ctrl+Z undo, Ctrl+C copy, Ctrl+S save, Esc close.
 """
 import sys
 import ctypes
@@ -14,7 +14,7 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QPoint, QPointF, QRect, QRectF, QSize, QSizeF, QAbstractNativeEventFilter, QSettings, QStandardPaths
 from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QGuiApplication, QIcon, QImage, QKeySequence, QPainter,
-                           QPainterPath, QPen, QPixmap, QPolygonF, QShortcut, QCursor)
+                           QPainterPath, QPen, QPixmap, QPolygonF, QShortcut, QCursor, QActionGroup)
 from PySide6.QtWidgets import (QApplication, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
                                QHBoxLayout, QLabel, QMenu, QPlainTextEdit, QSpinBox, QToolButton, QVBoxLayout,
                                QSystemTrayIcon, QToolBar, QWidget, QMainWindow, QScrollArea, QMessageBox)
@@ -115,6 +115,8 @@ class Overlay(QWidget):
 # ---------------------------------------------------------------- editor
 FONTS = ["Segoe UI", "Arial", "Times New Roman", "Georgia", "Consolas", "Comic Sans MS"]
 WIDTHS = [("Thin", 2), ("Medium", 4), ("Thick", 8)]
+SHAPES = [("rect", "Rectangle"), ("rrect", "Rounded"), ("ellipse", "Ellipse"), ("line", "Line")]
+WIDTH_TOOLS = ("arrow", "shape", "pen", "marker")
 
 
 class TextDialog(QDialog):
@@ -185,7 +187,8 @@ class Canvas(QWidget):
         self.history = []  # snapshots of self.items for undo
         self.tool = "arrow"
         self.color = QColor("#ff3b30")
-        self.width_ = 4
+        self.widths = {t: 4 for t in WIDTH_TOOLS}  # each tool keeps its own thickness
+        self.shape = "rect"
         self.cur = None
         self.drag = None  # (text item, offset)
         self.setFixedSize(pixmap.deviceIndependentSize().toSize())
@@ -228,8 +231,17 @@ class Canvas(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         p.setPen(QPen(color, w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
         p.setBrush(Qt.NoBrush)
-        if kind == "rect":
-            p.drawRect(QRectF(*it["pts"]).normalized())
+        if kind in ("rect", "rrect", "ellipse"):
+            r = QRectF(*it["pts"]).normalized()
+            if kind == "rect":
+                p.drawRect(r)
+            elif kind == "rrect":
+                rad = min(12 + w * 2, r.width() / 2, r.height() / 2)
+                p.drawRoundedRect(r, rad, rad)
+            else:
+                p.drawEllipse(r)
+        elif kind == "line":
+            p.drawLine(*it["pts"])
         elif kind == "arrow":
             a, b = it["pts"]
             v = b - a
@@ -303,7 +315,8 @@ class Canvas(QWidget):
             self.edit_text(pos=pt)
             return
         n = 1 if self.tool in ("pen", "marker") else 2
-        self.cur = {"kind": self.tool, "color": QColor(self.color), "width": self.width_, "pts": [pt] * n}
+        kind = self.shape if self.tool == "shape" else self.tool
+        self.cur = {"kind": kind, "color": QColor(self.color), "width": self.widths.get(self.tool, 4), "pts": [pt] * n}
 
     def mouseDoubleClickEvent(self, e):
         hit = self.text_at(e.position())
@@ -323,6 +336,10 @@ class Canvas(QWidget):
             return
         if self.cur["kind"] in ("pen", "marker"):
             self.cur["pts"].append(pt)
+        elif e.modifiers() & Qt.ShiftModifier and self.cur["kind"] in ("rect", "rrect", "ellipse", "blur"):
+            a = self.cur["pts"][0]  # Shift: square / circle
+            d = max(abs(pt.x() - a.x()), abs(pt.y() - a.y()))
+            self.cur["pts"][1] = QPointF(a.x() + (d if pt.x() >= a.x() else -d), a.y() + (d if pt.y() >= a.y() else -d))
         else:
             self.cur["pts"][1] = pt
         self.update()
@@ -353,7 +370,13 @@ def tool_icon(name, color=None):
         p.setBrush(fg)
         p.drawPolygon(QPolygonF([QPointF(19, 5), QPointF(11, 7), QPointF(17, 13)]))
     elif name == "rect":
-        p.drawRoundedRect(QRectF(4, 6, 16, 12), 2, 2)
+        p.drawRect(QRectF(4, 6, 16, 12))
+    elif name == "rrect":
+        p.drawRoundedRect(QRectF(4, 6, 16, 12), 4, 4)
+    elif name == "ellipse":
+        p.drawEllipse(QRectF(3, 6, 18, 12))
+    elif name == "line":
+        p.drawLine(QPointF(5, 19), QPointF(19, 5))
     elif name == "text":
         p.setFont(QFont("Segoe UI", 15, QFont.Bold))
         p.drawText(QRectF(0, 0, 24, 24), Qt.AlignCenter, "T")
@@ -390,16 +413,9 @@ def tool_icon(name, color=None):
         p.drawLine(QPointF(12, 4), QPointF(12, 15))
         p.drawPolyline(QPolygonF([QPointF(7, 10), QPointF(12, 15), QPointF(17, 10)]))
         p.drawPolyline(QPolygonF([QPointF(4, 16), QPointF(4, 20), QPointF(20, 20), QPointF(20, 16)]))
-    elif name.startswith("width"):  # "width:<px>" = current thickness, plain "width" = all three
-        ws = [int(name.split(":")[1])] if ":" in name else [1, 2.5, 4.5]
-        for i, w in enumerate(ws):
-            y = 12 if len(ws) == 1 else 6 + i * 6
-            p.setPen(QPen(fg, min(w, 7), Qt.SolidLine, Qt.RoundCap))
-            p.drawLine(QPointF(4, y), QPointF(20, y))
-    elif name == "pin":
-        p.drawPolygon(QPolygonF([QPointF(9, 4), QPointF(15, 4), QPointF(14, 10), QPointF(18, 14),
-                                 QPointF(6, 14), QPointF(10, 10)]))
-        p.drawLine(QPointF(12, 14), QPointF(12, 20))
+    elif name.startswith("width:"):  # thickness sample for the width menus
+        p.setPen(QPen(fg, min(int(name.split(":")[1]), 7), Qt.SolidLine, Qt.RoundCap))
+        p.drawLine(QPointF(4, 12), QPointF(20, 12))
     p.end()
     return QIcon(px)
 
@@ -417,6 +433,7 @@ QToolButton::menu-button { border: none; width: 12px; }
 QToolButton::menu-indicator { image: none; width: 0; }
 QMenu { background: #26262a; color: #e8e8e8; border: 1px solid #3a3a3c; padding: 4px; }
 QMenu::item { padding: 6px 24px 6px 8px; border-radius: 5px; }
+QMenu::item:checked { background: #3a3a40; }
 QMenu::item:selected { background: #2d8cff; }
 """
 
@@ -437,29 +454,42 @@ class Editor(QMainWindow):
         tb.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
         tb.setStyleSheet(TOOLBAR_QSS)
         self.addToolBar(tb)
-        for key, name, label in [("A", "arrow", "Arrow"), ("R", "rect", "Rectangle"), ("T", "text", "Text"),
+        self.tool_acts = {}
+        self.width_groups = {}
+        for key, name, label in [("A", "arrow", "Arrow"), ("R", "shape", "Rectangle"), ("T", "text", "Text"),
                                  ("B", "blur", "Blur"), ("P", "pen", "Pen"), ("M", "marker", "Marker")]:
-            act = QAction(tool_icon(name), label, self, shortcut=key, checkable=True)
+            act = QAction(tool_icon("rect" if name == "shape" else name), label, self, shortcut=key, checkable=True)
             act.setToolTip(f"{label} ({key})")
             act.triggered.connect(lambda _=False, n=name: self.set_tool(n))
             act.setData(name)
             tb.addAction(act)
-            if name == "arrow":
-                arrow_act = act
+            self.tool_acts[name] = act
+            if name in WIDTH_TOOLS:  # dropdown ▾ with shapes (for "shape") and Thin / Medium / Thick
+                menu = QMenu(self)
+                menu.setStyleSheet(TOOLBAR_QSS)
+                if name == "shape":
+                    sg = QActionGroup(menu)
+                    for kind, slabel in SHAPES:
+                        sa_ = menu.addAction(tool_icon(kind), slabel)
+                        sa_.setCheckable(True)
+                        sa_.setChecked(kind == "rect")
+                        sg.addAction(sa_)
+                        sa_.triggered.connect(lambda _=False, k=kind, l=slabel: self.set_shape(k, l))
+                    menu.addSeparator()
+                wg = QActionGroup(menu)
+                for i, (wlabel, w) in enumerate(WIDTHS, 1):
+                    wa = menu.addAction(tool_icon(f"width:{w}"), f"{wlabel}	{i}")
+                    wa.setCheckable(True)
+                    wa.setChecked(w == 4)
+                    wa.setData(w)
+                    wg.addAction(wa)
+                    wa.triggered.connect(lambda _=False, n=name, w=w: self.set_width(n, w))
+                self.width_groups[name] = wg
+                act.setMenu(menu)
+                tb.widgetForAction(act).setPopupMode(QToolButton.MenuButtonPopup)
+        for i, (wlabel, w) in enumerate(WIDTHS, 1):  # 1 / 2 / 3 = width of the current tool
+            QShortcut(str(i), self, lambda w=w: self.set_width(self.canvas.tool, w))
         tb.addSeparator()
-        # thickness: Thin / Medium / Thick — for arrow, rectangle, pen, marker
-        self.width_menu = QMenu(self)
-        self.width_menu.setStyleSheet(TOOLBAR_QSS)
-        for i, (label, w) in enumerate(WIDTHS, 1):
-            wa = self.width_menu.addAction(tool_icon(f"width:{w}"), f"{label}\t{i}")
-            wa.triggered.connect(lambda _=False, w=w, l=label: self.set_width(w, l))
-            QShortcut(str(i), self, lambda w=w, l=label: self.set_width(w, l))
-        self.width_act = QAction(tool_icon("width"), "Width", self)
-        self.width_act.setMenu(self.width_menu)
-        tb.addAction(self.width_act)
-        tb.widgetForAction(self.width_act).setPopupMode(QToolButton.InstantPopup)
-        arrow_act.setMenu(self.width_menu)
-        tb.widgetForAction(arrow_act).setPopupMode(QToolButton.MenuButtonPopup)
         self.color_act = QAction(tool_icon("color", self.canvas.color), "Color", self, shortcut="C")
         self.color_act.setToolTip("Color (C)")
         self.color_act.triggered.connect(self.pick_color)
@@ -467,8 +497,7 @@ class Editor(QMainWindow):
         tb.addSeparator()
         for icon, text, sc, tip, fn in [("undo", "Undo", QKeySequence.Undo, "Ctrl+Z", self.canvas.undo),
                                         ("copy", "Copy", QKeySequence.Copy, "Ctrl+C", self.copy),
-                                        ("save", "Save", QKeySequence.Save, "Ctrl+S", self.save),
-                                        ("pin", "Pin", "Ctrl+P", "Ctrl+P", self.pin)]:
+                                        ("save", "Save", QKeySequence.Save, "Ctrl+S", self.save)]:
             act = QAction(tool_icon(icon), text, self, shortcut=sc)
             act.setToolTip(f"{text} ({tip})")
             act.triggered.connect(fn)
@@ -488,11 +517,23 @@ class Editor(QMainWindow):
             if a.isCheckable():
                 a.setChecked(a.data() == name)
 
-    def set_width(self, w, label):
-        self.canvas.width_ = w
-        self.width_act.setIcon(tool_icon(f"width:{w}"))
-        self.width_act.setToolTip(f"Width: {label} (1 / 2 / 3)")
-        self.statusBar().showMessage(f"Width: {label}", 1500)
+    def set_width(self, tool, w):
+        if tool not in WIDTH_TOOLS:
+            return
+        self.canvas.widths[tool] = w
+        for a in self.width_groups[tool].actions():
+            a.setChecked(a.data() == w)
+        self.set_tool(tool)
+        label = next(l for l, v in WIDTHS if v == w)
+        self.statusBar().showMessage(f"{self.tool_acts[tool].text()}: {label}", 1500)
+
+    def set_shape(self, kind, label):
+        self.canvas.shape = kind
+        act = self.tool_acts["shape"]
+        act.setIcon(tool_icon(kind))
+        act.setText(label)
+        act.setToolTip(f"{label} (R) — Shift: square / circle")
+        self.set_tool("shape")
 
     def pick_color(self):
         c = QColorDialog.getColor(self.canvas.color, self)
@@ -513,53 +554,6 @@ class Editor(QMainWindow):
             self.app.settings.setValue("save_dir", str(Path(path).parent))
             self.statusBar().showMessage(f"Saved {path}", 3000)
 
-    def pin(self):
-        self.app.pin(self.canvas.render_image())
-        self.close()
-
-
-# ---------------------------------------------------------------- pin
-class Pin(QLabel):
-    """Always-on-top floating screenshot. Drag to move, wheel = opacity, Ctrl+wheel = zoom, Esc/double-click = close."""
-
-    def __init__(self, pixmap):
-        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
-        self.src = pixmap
-        self.scale = 1.0
-        self.setPixmap(pixmap)
-        self.setStyleSheet("border: 1px solid #2d8cff;")
-        self.drag = None
-        self.move(QCursor.pos() - QPoint(20, 20))
-
-    def mousePressEvent(self, e):
-        self.drag = e.globalPosition().toPoint() - self.pos()
-
-    def mouseMoveEvent(self, e):
-        if self.drag is not None:
-            self.move(e.globalPosition().toPoint() - self.drag)
-
-    def mouseReleaseEvent(self, _):
-        self.drag = None
-
-    def mouseDoubleClickEvent(self, _):
-        self.close()
-
-    def keyPressEvent(self, e):
-        if e.key() == Qt.Key_Escape:
-            self.close()
-        elif e.matches(QKeySequence.Copy):
-            QGuiApplication.clipboard().setPixmap(self.src)
-
-    def wheelEvent(self, e):
-        d = 1 if e.angleDelta().y() > 0 else -1
-        if e.modifiers() & Qt.ControlModifier:
-            self.scale = max(0.2, min(4.0, self.scale + 0.1 * d))
-            sz = self.src.deviceIndependentSize() * self.scale
-            self.setPixmap(self.src.scaled((sz * self.src.devicePixelRatio()).toSize(),
-                                           Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            self.adjustSize()
-        else:
-            self.setWindowOpacity(max(0.2, min(1.0, self.windowOpacity() + 0.1 * d)))
 
 
 # ---------------------------------------------------------------- global hotkeys (Win32)
@@ -664,9 +658,6 @@ class ShotApp:
 
     def edit(self, px):
         self.keep(Editor(self, px))
-
-    def pin(self, px):
-        self.keep(Pin(px))
 
     def open_file(self):
         path, _ = QFileDialog.getOpenFileName(None, "Open", "", "Images (*.png *.jpg *.jpeg *.gif *.bmp)")

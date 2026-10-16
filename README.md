@@ -18,8 +18,9 @@ The app lives in the system tray. `bin/ShotWin.exe` is rebuilt automatically fro
 | `Ctrl+Shift+2` | Screen under the mouse |
 | `Ctrl+Shift+3` | All screens (one wide image) |
 
-Editor: `A` arrow, `R` rectangle, `T` text, `B` blur, `P` pen, `M` marker, `1`/`2`/`3` line width, `C` color,
-`Ctrl+Z` undo, `Ctrl+C` copy, `Ctrl+S` save, `Ctrl+P` pin, `Esc` close.
+Editor: `A` arrow, `R` shapes (rectangle / rounded / ellipse / line, Shift = square / circle), `T` text, `B` blur,
+`P` pen, `M` marker, `C` color, `Ctrl+Z` undo, `Ctrl+C` copy, `Ctrl+S` save, `Esc` close.
+Line width (Thin / Medium / Thick): ▾ next to Arrow, Shapes, Pen, Marker — or keys `1`/`2`/`3` for the current tool.
 Text: drag to move, double-click to edit (font, size, bold / italic / underline).
 
 Only one copy can run at a time — if hotkeys "are already used", ShotWin is probably already in the tray.
