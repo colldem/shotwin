@@ -16,7 +16,7 @@ from PySide6.QtCore import Qt, QPoint, QPointF, QRect, QRectF, QSize, QSizeF, QA
 from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QGuiApplication, QIcon, QImage, QKeySequence, QPainter,
                            QPainterPath, QPen, QPixmap, QPolygonF, QShortcut, QCursor, QActionGroup)
 from PySide6.QtWidgets import (QApplication, QColorDialog, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QInputDialog,
-                               QHBoxLayout, QLabel, QMenu, QPlainTextEdit, QSpinBox, QToolButton, QVBoxLayout,
+                               QHBoxLayout, QLabel, QMenu, QPlainTextEdit, QSpinBox, QToolButton, QVBoxLayout, QSizePolicy, QTextBrowser,
                                QSystemTrayIcon, QToolBar, QWidget, QMainWindow, QScrollArea, QMessageBox)
 
 APP = "ShotWin"
@@ -476,6 +476,13 @@ def tool_icon(name, color=None):
         p.drawEllipse(QRectF(3, 6, 18, 12))
     elif name == "line":
         p.drawLine(QPointF(5, 19), QPointF(19, 5))
+    elif name == "info":
+        p.setPen(QPen(QColor("#9a9aa0"), 1.6))
+        p.drawEllipse(QRectF(4, 4, 16, 16))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#9a9aa0"))
+        p.drawEllipse(QRectF(11, 7.2, 2.2, 2.2))
+        p.drawRoundedRect(QRectF(11.1, 10.5, 2, 6.5), 1, 1)
     elif name == "step":
         p.setPen(Qt.NoPen)
         p.setBrush(QColor("#ff3b30"))
@@ -544,6 +551,47 @@ QMenu::item:selected { background: #2d8cff; }
 """
 
 
+HELP_HTML = """
+<style>
+ body { color:#e0e0e0; font-family:'Segoe UI'; font-size:10pt; }
+ h3 { color:#ffffff; margin:10px 0 4px 0; } td { padding:2px 10px 2px 0; vertical-align:top; }
+ .k { color:#7ab8ff; font-family:Consolas; white-space:nowrap; } .muted { color:#9a9aa0; }
+</style>
+<h3>Capture (works anywhere)</h3>
+<table>
+<tr><td class=k>Ctrl+Shift+1</td><td>Area — drag a rectangle; <b>Enter</b> = whole desktop, <b>Esc</b> / right-click = cancel</td></tr>
+<tr><td class=k>Ctrl+Shift+2</td><td>Screen under the mouse</td></tr>
+<tr><td class=k>Ctrl+Shift+3</td><td>All screens in one image</td></tr>
+</table>
+<h3>Tools</h3>
+<table>
+<tr><td class=k>A</td><td><b>Arrow</b> — drag to draw. Click an arrow to select it: drag it to move,
+ drag the round end handles to rotate / stretch.</td></tr>
+<tr><td class=k>R</td><td><b>Shapes</b> — rectangle, rounded, ellipse, line (pick in ▾).
+ Hold <b>Shift</b> for a square / circle.</td></tr>
+<tr><td class=k>T</td><td><b>Text</b> — click to place; choose font, size, bold / italic / underline.
+ Drag to move, double-click to edit.</td></tr>
+<tr><td class=k>N</td><td><b>Step</b> — each click adds the next number 1, 2, 3…
+ Drag to move, double-click to change the number.</td></tr>
+<tr><td class=k>B</td><td><b>Blur</b> — drag over private data to pixelate it.</td></tr>
+<tr><td class=k>P</td><td><b>Pen</b> — freehand drawing.</td></tr>
+<tr><td class=k>M</td><td><b>Marker</b> — semi-transparent highlighter.</td></tr>
+<tr><td class=k>1 / 2 / 3</td><td>Thin / Medium / Thick for the current tool (also in ▾ next to the tool).</td></tr>
+<tr><td class=k>C</td><td><b>Color</b> for new items.</td></tr>
+</table>
+<h3>Actions</h3>
+<table>
+<tr><td class=k>Ctrl+Z</td><td><b>Undo</b> the last change (drawing, moving, editing)</td></tr>
+<tr><td class=k>Ctrl+C</td><td><b>Copy</b> the image to the clipboard — paste into Teams, Outlook, Jira…</td></tr>
+<tr><td class=k>Ctrl+S</td><td><b>Save</b> as PNG / JPEG</td></tr>
+<tr><td class=k>F1</td><td>This help</td></tr>
+<tr><td class=k>Esc</td><td>Close the editor</td></tr>
+</table>
+<p class=muted>ShotWin lives in the system tray: click its icon for an area capture, right-click for the menu.
+Run only one copy — if hotkeys are “already used”, ShotWin is probably already running.</p>
+"""
+
+
 class Editor(QMainWindow):
     def __init__(self, app, pixmap):
         super().__init__()
@@ -608,6 +656,16 @@ class Editor(QMainWindow):
             act.setToolTip(f"{text} ({tip})")
             act.triggered.connect(fn)
             tb.addAction(act)
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        tb.addWidget(spacer)
+        help_act = QAction(tool_icon("info"), "", self, shortcut="F1")
+        help_act.setToolTip("Help — tools and shortcuts (F1)")
+        help_act.triggered.connect(self.show_help)
+        tb.addAction(help_act)
+        hb = tb.widgetForAction(help_act)
+        hb.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        hb.setStyleSheet("min-width: 0; padding: 4px;")
         self.tb = tb
         QShortcut(Qt.Key_Escape, self, self.close)
         self.set_tool("arrow")
@@ -646,6 +704,17 @@ class Editor(QMainWindow):
         if c.isValid():
             self.canvas.color = c
             self.color_act.setIcon(tool_icon("color", c))
+
+    def show_help(self):
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"{APP} — help")
+        dlg.setStyleSheet("QDialog, QTextBrowser { background: #1e1e20; border: none; }")
+        tb = QTextBrowser()
+        tb.setHtml(HELP_HTML)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(tb)
+        dlg.resize(620, 640)
+        dlg.exec()
 
     def copy(self):
         QGuiApplication.clipboard().setImage(self.canvas.render_image().toImage())
