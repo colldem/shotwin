@@ -2,7 +2,8 @@
 
 Hotkeys (global, Windows):
   Ctrl+Shift+1  — area capture
-  Ctrl+Shift+2  — full-screen capture
+  Ctrl+Shift+2  — full-screen capture (screen under the mouse)
+  Ctrl+Shift+3  — all screens
 Editor: A arrow, R rect, T text, B blur, P pen, M marker, C color,
         Ctrl+Z undo, Ctrl+C copy, Ctrl+S save, Ctrl+P pin, Esc close.
 """
@@ -39,6 +40,13 @@ def grab_desktop():
         p.drawPixmap(QRect(g.topLeft() - geo.topLeft(), g.size()), s.grabWindow(0))
     p.end()
     return out, geo
+
+
+def grab_screen(screen):
+    """Capture a single monitor at its native resolution."""
+    px = screen.grabWindow(0)
+    px.setDevicePixelRatio(screen.devicePixelRatio())
+    return px
 
 
 class Overlay(QWidget):
@@ -604,7 +612,8 @@ class ShotApp:
         self.tray = QSystemTrayIcon(icon)
         m = QMenu()
         m.addAction("Area capture\tCtrl+Shift+1", self.area)
-        m.addAction("Full-screen capture\tCtrl+Shift+2", self.full)
+        m.addAction("Screen under mouse\tCtrl+Shift+2", self.full)
+        m.addAction("All screens\tCtrl+Shift+3", self.all_screens)
         m.addAction("Open image…", self.open_file)
         m.addSeparator()
         m.addAction("Quit", self.qt.quit)
@@ -617,6 +626,7 @@ class ShotApp:
         self.hk = register_hotkeys(self.qt, [
             (1, MOD_CTRL | MOD_SHIFT, 0x31, self.area),
             (2, MOD_CTRL | MOD_SHIFT, 0x32, self.full),
+            (3, MOD_CTRL | MOD_SHIFT, 0x33, self.all_screens),
         ])
 
     @staticmethod
@@ -646,6 +656,10 @@ class ShotApp:
         self.keep(Overlay(self.edit))
 
     def full(self):
+        scr = QGuiApplication.screenAt(QCursor.pos()) or QGuiApplication.primaryScreen()
+        self.edit(grab_screen(scr))
+
+    def all_screens(self):
         self.edit(grab_desktop()[0])
 
     def edit(self, px):

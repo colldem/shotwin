@@ -15,7 +15,8 @@ The app lives in the system tray. `bin/ShotWin.exe` is rebuilt automatically fro
 | Key | Action |
 |---|---|
 | `Ctrl+Shift+1` | Area capture |
-| `Ctrl+Shift+2` | Full-screen capture |
+| `Ctrl+Shift+2` | Screen under the mouse |
+| `Ctrl+Shift+3` | All screens (one wide image) |
 
 Editor: `A` arrow, `R` rectangle, `T` text, `B` blur, `P` pen, `M` marker, `1`/`2`/`3` line width, `C` color,
 `Ctrl+Z` undo, `Ctrl+C` copy, `Ctrl+S` save, `Ctrl+P` pin, `Esc` close.
